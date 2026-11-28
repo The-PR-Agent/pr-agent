@@ -984,9 +984,10 @@ def _published_lines(lines: list[str]) -> list[list]:
 
     Invisible characters and HTML comments are removed, and a comment that
     spans a line break takes the break with it, so its last line joins the line
-    it began on. Each entry is ``[first raw line, last raw line, text]``. The
-    scan is the one ``_strip_html_comments`` makes, so the two cannot disagree
-    about what a line says.
+    it began on. The scan is the one ``_strip_html_comments`` makes, so the two
+    cannot disagree about what a line says. A removal can split a reference and
+    leave its halves joined, so each line is read by rule 3 again at its end.
+    Each entry is ``[first raw line, last raw line, text]``.
     """
     text = "\n".join(_strip_invisible(line) for line in lines)
     closers = _positions(text, "-->")
@@ -1001,7 +1002,7 @@ def _published_lines(lines: list[str]) -> list[list]:
         pieces = piece.split("\n")
         parts.append(pieces[0])
         for part in pieces[1:]:  # a line break survives: the published line ends here
-            current[2] = "".join(parts)
+            current[2] = _strip_invisible("".join(parts))
             published.append(current)
             raw += 1
             current = [raw, raw, ""]
@@ -1021,7 +1022,7 @@ def _published_lines(lines: list[str]) -> list[list]:
         raw += text.count("\n", opener, closer + 3)
         current[1] = raw
         position = closer + 3
-    current[2] = "".join(parts)
+    current[2] = _strip_invisible("".join(parts))
     published.append(current)
     return published
 
@@ -1056,8 +1057,10 @@ def _flush_prose(
 
     The run is one segment, so a multiline HTML comment cannot straddle two.
     Invisible characters drop first, so a zero-width space hiding inside an
-    opener cannot smuggle a comment past the scan. With ``stripped``, rules 1
-    and 3 have been applied already, by the scan that split the field.
+    opener cannot smuggle a comment past the scan, and once more after the
+    comments: one that splits a reference leaves its halves to join. With
+    ``stripped``, both rules have been applied already, by the scan that split
+    the field, the second one over what the first left of each line.
 
     ``in_html`` is for a field that starts inside one of the template's HTML
     blocks. A backslash escapes nothing there, so a ``<`` is entity-encoded
@@ -1077,7 +1080,7 @@ def _flush_prose(
             segment = segment.replace("<!--", "<\\!--")
     else:
         segment = _strip_invisible(segment)
-        segment = _strip_html_comments(segment, neutralize=not in_html)
+        segment = _strip_invisible(_strip_html_comments(segment, neutralize=not in_html))
     if markdown_rules:
         spans = (
             []
@@ -1145,8 +1148,10 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
     can empty a line, and a line they empty ends a paragraph or a list item, and
     with it a code block inside that item; and since removing a comment can put
     a fence at the start of a line. A comment swallows the line breaks inside
-    it, so its last line joins the line it began on. A line that begins with the
-    fence delimiter is a fence before anything else is removed from it: what
+    it, so its last line joins the line it began on. It can also split a
+    reference, so what it leaves of a line is read by rule 3 again, and the
+    line is judged as that leaves it. A line that begins with the fence
+    delimiter is a fence before anything else is removed from it: what
     follows the delimiter there is the info string, where a comment is no
     comment. With ``joined``, the first line is paragraph text and opens no
     block: the template may put markup before it on the same line.
@@ -1223,7 +1228,9 @@ def _field_blocks(lines: list[str], *, joined: bool = False, prose_only: bool = 
                 position = closer + 3
                 continue
             kept.append(text[position : newline if newline is not None else len(text)])
-            return "".join(kept), raw
+            left = "".join(kept)
+            # What a removal joined can read as a reference, so the line gets rule 3 once more.
+            return (_strip_invisible(left) if len(kept) > 1 else left), raw
 
     while raw < len(lines):
         line = lines[raw]
@@ -1390,9 +1397,12 @@ def firewall_model_output(
             # The template writes a list marker before the field: let the rules
             # see the line the renderer sees, and take the marker off again.
             lines = ["- " + lines[0], *lines[1:]]
-        # The first line is judged as the renderer gets it: an invisible character can be
-        # all that keeps a list marker or a fence from starting a block.
-        doubt = after == "maybe" and not _reads_alike(_strip_invisible(lines[0]))
+        # The first line is judged as the renderer gets it: an invisible character, or a comment
+        # that splits a reference to one, can be all that keeps a list marker or a fence from
+        # starting a block.
+        first = _strip_invisible(lines[0])
+        without_comments = _published_lines([first])[0][2]
+        doubt = after == "maybe" and not (_reads_alike(first) and _reads_alike(without_comments))
         result = _firewall_markdown(
             lines,
             continued=continued or doubt,

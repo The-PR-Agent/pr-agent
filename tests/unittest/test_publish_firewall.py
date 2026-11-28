@@ -202,6 +202,17 @@ def test_what_a_drop_joins_is_kept_when_it_is_no_such_reference():
     )
 
 
+@pytest.mark.parametrize("body, left", [
+    ("&#82<!-- x -->38;", ""),  # the comment stands between the two halves
+    ("&#82<!-- x -->38; b", " b"),
+    ("a &#82<!--\n-->38; b", "a  b"),  # the comment takes the line break with it
+    ("&#82<!--38; b", " b"),  # an opener with no closer goes too
+])
+def test_a_reference_a_comment_splits_is_dropped_once_the_comment_is(body, left):
+    for context in ("markdown", "html_block", "html_inline"):
+        assert firewall_model_output(body, context=context) == left
+
+
 def test_the_joiners_stay_because_words_and_emoji_are_written_with_them():
     for text in ("می\u200cخواهم", "\U0001f468\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
                  "a\u200cb", "&#8204;", "&#x200D;", "&zwnj;", "&zwj;"):
@@ -451,6 +462,34 @@ def test_a_first_line_is_judged_as_the_renderer_gets_it():
     for body, payload in (("\u200b*\n    \n    [x](http://e.x)", "[x](http://e.x)"),
                           ("\u200b*\n     \n    ![t](http://e.x/p.png)", "![t](http://e.x/p.png)")):
         assert _live(firewall_model_output(body, after="maybe"), payload) == []
+
+
+def test_a_first_line_is_judged_after_the_reference_a_comment_splits_is_dropped():
+    # The same, with a reference in place of the character: "```" starts the line only once the
+    # comment between "&#82" and "03;" is gone.
+    body = "&#82<!-- -->03;```x\n<img src=a>\n```\n<img src=b>"
+
+    assert firewall_model_output(body, after="maybe") == "```x\n\\<img src=a>\n```\n\\<img src=b>"
+
+
+def test_a_line_is_judged_after_the_reference_a_comment_splits_is_dropped():
+    # The dropped reference kept "```" off the start of its line, so the fence two lines down was
+    # read as an opener and the tag after it as its code. Under the template's markup the line
+    # opens no fence, and the fence after it is the opener the renderer reads.
+    body = "&#82<!-- -->03;```x\n<img src=a>\n```\n<img src=b>"
+
+    assert firewall_model_output(body) == "```x\n<img src=a>\n```\n\\<img src=b>"
+    for after in ("markup", "item"):
+        assert firewall_model_output(body, after=after) == "```x\n\\<img src=a>\n```\n<img src=b>"
+
+
+@pytest.mark.parametrize("context", ["html_block", "html_inline"])
+def test_the_templates_html_block_ends_at_a_line_the_dropped_reference_empties(context):
+    # The block ends at the field's first blank line. Judged before the drop, that line had text,
+    # and the image after it was published as raw HTML, where no rule escapes a markdown object.
+    body = f"a\n&#82<!-- -->03;\n{IMAGE}"
+
+    assert firewall_model_output(body, context=context) == "a\n\n!\\[x\\](//evil.test/p.png)"
 
 
 def test_another_fields_open_backtick_leaves_the_first_paragraph_without_a_code_span():
