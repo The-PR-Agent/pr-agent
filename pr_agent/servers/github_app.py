@@ -202,6 +202,20 @@ async def handle_comments_on_pr(body: dict[str, Any],
         else:
             get_logger().info(f"User {sender=} is not eligible to process comment on PR {api_url=}")
 
+
+def _apply_repo_settings_or_skip(api_url: str, event: str, action: str) -> tuple[bool, Any]:
+    """Apply the repository settings, or log one warning when the PR cannot be read.
+
+    The handlers then return False, so the delivery is not recorded as completed and a manual redelivery runs it.
+    """
+    try:
+        return True, apply_repo_settings(api_url)
+    except ValueError as e:
+        cause = f": {e.__cause__}" if e.__cause__ is not None else ""
+        get_logger().warning(f"Skipping {event} {action=} for {api_url=}: {e}{cause}")
+        return False, None
+
+
 async def handle_new_pr_opened(body: dict[str, Any],
                                event: str,
                                sender: str,
@@ -216,7 +230,9 @@ async def handle_new_pr_opened(body: dict[str, Any],
         return {}
     if action in normalize_setting_list(get_settings().github_app.handle_pr_actions, split_commas=True):
         # logic to ignore PRs with specific titles (e.g. "[Auto] ...")
-        apply_repo_settings(api_url)
+        applied, _ = _apply_repo_settings_or_skip(api_url, event, action)
+        if not applied:
+            return False
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             return await _perform_auto_commands_github("pr_commands", agent, body, api_url, log_context)
         else:
@@ -293,7 +309,9 @@ async def handle_pull_request_review_submitted(body: dict[str, Any],
         get_logger().info(f"Skipping pull_request_review from bot sender: {sender=}")
         return {}
 
-    apply_repo_settings(api_url)
+    applied, _ = _apply_repo_settings_or_skip(api_url, event, action)
+    if not applied:
+        return False
     review = body.get("review", {})
     review_state = review.get("state", "") if isinstance(review, dict) else ""
     review_author_type = ""
@@ -338,7 +356,9 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
 
     # we need to apply the repo settings to get the correct settings for the PR.
     # This is quite expensive - a call to the git provider is made for each PR event.
-    git_provider = apply_repo_settings(api_url)
+    applied, git_provider = _apply_repo_settings_or_skip(api_url, event, action)
+    if not applied:
+        return False
     if not _as_bool_setting(get_settings().github_app.handle_push_trigger):
         return {}
     if (_as_bool_setting(

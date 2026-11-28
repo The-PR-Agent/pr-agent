@@ -83,11 +83,6 @@ _ALLOWLIST = {
     ): "gerrit_settings.get('webhook_password', None) in pr_agent/servers/gerrit_server.py",
     (
         "github",
-        "api_retries",
-    ): "github_config = get_settings().github then github_config.get('api_retries') in "
-    "pr_agent/git_providers/github_provider.py",
-    (
-        "github",
         "seconds_between_requests",
     ): "github_config.get('seconds_between_requests') in pr_agent/git_providers/github_provider.py",
     (
