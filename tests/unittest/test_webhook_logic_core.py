@@ -313,6 +313,14 @@ async def test_gitlab_ask_in_existing_discussion_keeps_reply_in_thread(gitlab_we
 
 
 @pytest.mark.asyncio
+async def test_gitlab_ask_keeps_discussion_id_outside_closing_fence(gitlab_webhook_module, monkeypatch):
+    note = "/ask When does finish() run?\n```python\nif ready:\n    finish()\n```"
+    calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, "DiscussionNote")
+
+    assert calls == [("https://gitlab.com/org/repo/-/merge_requests/1", f"{note}\n--comment_id=discussion-42")]
+
+
+@pytest.mark.asyncio
 async def test_gitlab_diff_note_ask_still_uses_ask_line(gitlab_webhook_module, monkeypatch):
     calls = await _record_gitlab_note_request(
         gitlab_webhook_module, monkeypatch, "/ask why this?", "DiffNote",
