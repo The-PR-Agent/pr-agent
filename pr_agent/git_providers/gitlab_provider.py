@@ -113,6 +113,10 @@ _diff_ready_sleep = time.sleep
 
 # GitLab rejects a merge request title longer than this (HTTP 400).
 MAX_PR_TITLE_GITLAB_LENGTH = 255
+# Official create and update MR API: "Description of the merge request.
+# Limited to 1,048,576 characters." The application setting default is
+# 1.megabyte; exceeding it fails the whole update with HTTP 400.
+MAX_PR_DESCRIPTION_GITLAB_LENGTH = 1_048_576
 
 # Keep requests small: GitLab limits multi-blob GraphQL responses to 20 MB.
 # The wall-clock budget is best-effort while Requests waits for response headers.
@@ -1692,7 +1696,12 @@ class GitLabProvider(GitProvider):
                 pr_title = _neutralize_gitlab_mentions(pr_title)
                 pr_title = self.limit_title_characters(pr_title, MAX_PR_TITLE_GITLAB_LENGTH)
                 self.mr.title = pr_title
-            self.mr.description = _neutralize_gitlab_mentions(pr_body)
+            # Neutralization can grow the body the same way; cap after that
+            # rewrite so an overlong description cannot fail a title update.
+            pr_body = self.limit_description_characters(
+                _neutralize_gitlab_mentions(pr_body), MAX_PR_DESCRIPTION_GITLAB_LENGTH
+            )
+            self.mr.description = pr_body
             self.mr.save()
         except (GitlabError, RequestException) as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
