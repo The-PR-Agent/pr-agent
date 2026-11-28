@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import re
 import shlex
 import tomllib
 from contextlib import asynccontextmanager, contextmanager
@@ -16,6 +17,7 @@ from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.code_fence import fenced_code_ranges
 from pr_agent.algo.command_words import _split_command
 from pr_agent.algo.comment_identity import (
     add_comment_identity,
@@ -24,7 +26,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.i18n import t
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.setting_utils import _as_bool_setting
-from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
+from pr_agent.algo.utils import _fix_key_value, decode_user_text_args, encode_user_text_arg, update_settings_from_args
 from pr_agent.commands.pr_description import PRDescription
 from pr_agent.commands.pr_questions import PRQuestions
 from pr_agent.commands.pr_reviewer import PRReviewer
@@ -178,6 +180,136 @@ def _validation_args(args: list[str]) -> list[str]:
         argument if CliArgs.is_mapping_arg(argument) else argument.split("=", 1)[0]
         for argument in args
     ]
+
+
+def _request_lexer(request: str) -> shlex.shlex:
+    lexer = shlex.shlex(request, posix=True)
+    lexer.whitespace_split = True
+    # Apostrophes and issue references such as #123 are literal in PR comments.
+    lexer.quotes = '"'
+    lexer.commenters = ""
+    return lexer
+
+
+_QuestionPart = str | tuple[str, list[str], str]
+_SHELL_DELIMITERS = re.compile(r'\\.|"|[ \t\r\n]+', re.DOTALL)
+
+
+def _option_suffix_starts(body: str) -> list[int]:
+    """Return the possible ends of the question, from no trailing options to the longest option suffix."""
+    end = len(body.rstrip(" \t\r\n"))
+    starts = [end]
+    # Walk the shell word boundaries backwards so quotes in the code do not affect the option suffix.
+    quoted = False
+    for match in reversed(list(_SHELL_DELIMITERS.finditer(body, 0, end))):
+        token = match[0]
+        if token == '"':
+            quoted = not quoted
+        elif not quoted and token[0] != "\\":
+            if not body.startswith("--", match.end()):
+                break
+            starts.append(match.start())
+    return starts
+
+
+def _leading_options_end(question: str) -> int:
+    """Skip complete option words, including any Markdown inside quoted values."""
+    lexer = _request_lexer(question)
+    start = end = 0
+    while start < len(question):
+        if question[start] in lexer.whitespace:
+            start += 1
+        elif question.startswith("--", start):
+            next(lexer)
+            start = end = lexer.instream.tell()
+        else:
+            break
+    return end
+
+
+def _encode_quoted_fenced_question(question: str) -> str | None:
+    """Protect fenced code inside a double-quoted question before shell tokenization."""
+    start = len(question) - len(question.lstrip(" \t\r\n"))
+    if not question.startswith('"', start):
+        return None
+
+    body = question[start + 1:]
+    pieces = []
+    previous_end = 0
+    for opening, closing in fenced_code_ranges(body, argument_ends=_option_suffix_starts(body)):
+        prose = body[previous_end:opening]
+        # Temporarily close the quote at the fence. A quoted heading alone ends its word earlier.
+        prefix = '"' + prose + '"'
+        probe = _request_lexer(prefix)
+        try:
+            next(probe)
+        except ValueError:
+            break
+        if probe.instream.tell() < len(prefix):
+            break  # The quoted argument ended before this fence.
+        code = body[opening:closing]
+        pieces.extend((prose, code.replace("\\", "\\\\").replace('"', '\\"')))
+        previous_end = closing
+    if not pieces:
+        return None
+
+    pieces.append(body[previous_end:])
+    protected = '"' + "".join(pieces)
+    lexer = _request_lexer(protected)
+    argument = encode_user_text_arg(next(lexer))
+    end = lexer.instream.tell()
+    # shlex consumes one separator after the word, including a Markdown line break.
+    if protected[end - 1] in lexer.whitespace:
+        end -= 1
+    return question[:start] + argument + protected[end:]
+
+
+def _fenced_question_parts(question: str, leading_options: str) -> tuple[list[str], list[_QuestionPart]] | None:
+    """Keep code and its Markdown boundaries literal, and tokenize the surrounding prose as usual."""
+    raw_args: list[str] = []
+    parts: list[_QuestionPart] = []
+
+    def append_prose(prose: str) -> None:
+        tokens = list(_request_lexer(prose))
+        raw_args.extend(tokens)
+        args = _reencode_quoted_setting_args(f"/ask {prose}", tokens)
+        leading = prose[:len(prose) - len(prose.lstrip())]
+        trailing = prose[len(prose.rstrip()):] if prose.strip() else ""
+        parts.append((leading, args, trailing))
+
+    previous_end = 0
+    try:
+        # Leave the option suffix intact for append_prose, including fences in quoted setting values.
+        option_starts = _option_suffix_starts(question)
+        markdown = question[:option_starts[-1]] if len(option_starts) > 1 else question
+        for start, end in fenced_code_ranges(markdown):
+            append_prose(leading_options + question[previous_end:start])
+            leading_options = ""
+            parts.append(question[start:end])
+            previous_end = end
+        if not parts:
+            return None
+        append_prose(question[previous_end:])
+    except ValueError:
+        # Let the request lexer handle malformed or partially quoted prose.
+        return None
+    return raw_args, parts
+
+
+def _apply_fenced_question_settings(parts: list[_QuestionPart]) -> list[str]:
+    rendered = []
+    for index, part in enumerate(parts):
+        if isinstance(part, str):
+            rendered.append(part)
+            continue
+        leading, args, trailing = part
+        prose = leading + decode_user_text_args(update_settings_from_args(args)) + trailing
+        if index == 0:
+            prose = prose.lstrip()
+        elif index == len(parts) - 1:
+            prose = prose.rstrip()
+        rendered.append(prose)
+    return [encode_user_text_arg("".join(rendered))]
 
 
 def prepare_command(command: str) -> list[str]:
@@ -437,17 +569,26 @@ class PRAgent:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
 
+        question_parts = None
         if isinstance(request, str):
-            lexer = shlex.shlex(request, posix=True)
-            lexer.whitespace_split = True
-            # Keep apostrophes literal without adding backslashes inside double quotes.
-            lexer.quotes = '"'
-            # Treat "#" as ordinary text. shlex drops it and everything after it as a shell
-            # comment, which silently truncated questions such as "/ask what does #123 do?".
-            # This input is a single already-parsed command, never a shell script.
-            lexer.commenters = ''
-            action, *raw_args = list(lexer)
-            args = _reencode_quoted_setting_args(request, raw_args)
+            lexer = _request_lexer(request)
+            action = next(lexer)
+            fenced = None
+            if action.lstrip("/").lower() in {"ask", "ask_question"} and ("```" in request or "~~~" in request):
+                question = request[lexer.instream.tell():]
+                options_end = _leading_options_end(question)
+                leading_options, question = question[:options_end], question[options_end:]
+                encoded = _encode_quoted_fenced_question(question)
+                if encoded is not None:
+                    question = encoded
+                    lexer = _request_lexer(leading_options + question)
+                    request = f"{action} {leading_options}{question}"
+                fenced = _fenced_question_parts(question, leading_options)
+            if fenced is not None:
+                raw_args, question_parts = fenced
+            else:
+                raw_args = list(lexer)
+                args = _reencode_quoted_setting_args(request, raw_args)
         else:
             action, *raw_args = request
             args = raw_args
@@ -467,7 +608,10 @@ class PRAgent:
         settings = get_settings()
         previous_response_language = settings.config.get("response_language", "en-us")
         try:
-            args = update_settings_from_args(args)
+            if question_parts is not None:
+                args = _apply_fenced_question_settings(question_parts)
+            else:
+                args = update_settings_from_args(args)
         except Exception:
             if settings.config.get("response_language", "en-us") != previous_response_language:
                 settings.set("CONFIG.RESPONSE_LANGUAGE", previous_response_language)

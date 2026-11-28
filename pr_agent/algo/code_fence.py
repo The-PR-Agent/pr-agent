@@ -1,15 +1,54 @@
-"""Helpers for stripping a Markdown code fence that wraps a whole model answer.
+"""Helpers for recognizing Markdown code fences.
 
 Kept in its own module so the commands that need it (the changelog and the
 description paths) do not import each other.
 """
 
 import re
+from collections.abc import Iterator
+from io import StringIO
 
 # Fence lines: 3+ backticks, optionally indented. Four-backtick fences are
 # standard Markdown for embedding ``` inside a block.
 _OPEN_FENCE_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})")
 _CLOSING_FENCE_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})$")
+_QUOTED_CLOSING_FENCE_RE = re.compile(r'(?:^|(?<=[\r\n])) {0,3}(?:`{3,}|~{3,})[ \t]*"(?=[ \t\r\n]|$)')
+
+
+def fenced_code_ranges(text: str, *, argument_ends: list[int] | None = None) -> Iterator[tuple[int, int]]:
+    """Yield closed Markdown fence ranges, optionally within a quoted command argument."""
+    closing_quotes = set()
+    if argument_ends:
+        closing_quotes = {end - 1 for end in argument_ends if end and text[end - 1] == '"'}
+        # Positional prose can follow the closing quote before the trailing options.
+        if argument_ends[-1] - 1 not in closing_quotes:
+            last_quote = None
+            for match in _QUOTED_CLOSING_FENCE_RE.finditer(text, 0, argument_ends[-1]):
+                last_quote = match.end() - 1
+            if last_quote is not None:
+                closing_quotes.add(last_quote)
+    opener = ""
+    start = offset = 0
+    for line in StringIO(text, newline=""):
+        body = line.rstrip("\r\n")
+        stripped = body.lstrip(" ")
+        if len(body) - len(stripped) <= 3:
+            if opener:
+                if stripped.startswith(opener):
+                    if closing_quotes and (match := _QUOTED_CLOSING_FENCE_RE.match(body)):
+                        quote = offset + match.end() - 1
+                        if quote in closing_quotes:
+                            # Later fences can belong to a separate quoted option.
+                            yield start, quote
+                            return
+                    if _CLOSING_FENCE_RE.fullmatch(stripped.rstrip(" \t")):
+                        yield start, offset + len(body)
+                        opener = ""
+            elif match := _OPEN_FENCE_RE.match(stripped):
+                fence = match["fence"]
+                if fence[0] != "`" or "`" not in stripped[match.end():]:
+                    opener, start = fence, offset
+        offset += len(line)
 
 
 def strip_wrapping_code_fence(text: str) -> str:

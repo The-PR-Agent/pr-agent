@@ -692,7 +692,10 @@ async def process_gitlab_event(data: dict, log_context: dict):
             note_type = data.get('object_attributes', {}).get('type')
             if (discussion_id and command_takes_comment_id(command) and (
                     not note_type or (note_type == "DiscussionNote" and command in ("/ask", "/ask_question")))):
-                body = f"{body} --comment_id={discussion_id}"
+                # Keep the metadata off a closing Markdown fence at the end of a question.
+                ends_with_fence = command in ("/ask", "/ask_question") and body.rstrip().endswith(("```", "~~~"))
+                separator = "\n" if ends_with_fence else " "
+                body = f"{body}{separator}--comment_id={discussion_id}"
             if note_type == 'DiffNote' and is_ask_command_comment(body):
                 # /ask on a whole file asks about that file; on lines it becomes /ask_line
                 body = handle_file_question(body, data, url) or handle_ask_line(body, data)

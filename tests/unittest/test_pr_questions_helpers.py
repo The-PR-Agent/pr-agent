@@ -113,7 +113,9 @@ def raw_question_commands(monkeypatch):
     monkeypatch.setattr("pr_agent.commands.pr_questions.get_main_pr_language", lambda *_args: "Python")
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
-    with request_cycle_context({"settings": deepcopy(get_settings())}):
+    settings = get_settings()
+    settings.get("config")  # Initialize Dynaconf before copying its loaded sections.
+    with request_cycle_context({"settings": deepcopy(settings)}):
         get_settings().set("CONFIG.RESPONSE_LANGUAGE", "en-us")
         get_settings().set("SKILLS.ENABLED", False)
         yield commands
@@ -132,6 +134,14 @@ def raw_question_commands(monkeypatch):
         (r'/ask "What\'s changed?"', r"What\'s changed?"),
         (r"/ask What\'s changed?", "What's changed?"),
         ("/ask Why this change? --comment_id=discussion-42", "Why this change?"),
+        (
+            '/ask "Explain this:\n```python\nif ready:\n    print("ok")\n```"',
+            'Explain this:\n```python\nif ready:\n    print("ok")\n```',
+        ),
+        (
+            '/ask --comment_id=42 "~~~python\n' + r'print("say \"ok\"")' + '\n~~~\nExplain  both quotes."',
+            '~~~python\n' + r'print("say \"ok\"")' + '\n~~~\nExplain  both quotes.',
+        ),
     ],
 )
 async def test_raw_ask_preserves_question_through_rendering(raw_question_commands, command_request, expected):
@@ -144,6 +154,86 @@ async def test_raw_ask_preserves_question_through_rendering(raw_question_command
     assert command.question_str == expected
     assert command.vars["questions"] == expected
     assert f"\n{expected}\n\n### **Answer:**\nExample answer\n" in command._prepare_pr_answer()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "heading", "last_line"),
+    [
+        ("/ask", "When is finish() called?", "    finish()"),
+        ("/ask_question", '"When is finish() called?"', "finish()"),
+    ],
+)
+async def test_raw_ask_preserves_fenced_code_in_prompt_and_answer(raw_question_commands, action, heading, last_line):
+    code = f"```python\nif ready:\n    process()\n{last_line}\n```"
+    expected = f"When is finish() called?\n\n{code}\n\nExplain the control flow."
+    request = f"{action} {heading}\n\n{code}\n\nExplain the control flow."
+
+    handled = await pr_agent_module.PRAgent(ai_handler=SimpleNamespace).handle_request(
+        "https://example.com/org/repo/pull/1", request
+    )
+
+    assert handled is True
+    command, = raw_question_commands
+    assert command.vars["questions"] == expected
+    assert f"\n{expected}\n\n### **Answer:**" in command._prepare_pr_answer()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_instructions", ["Style: concise", "Use this format:\n```text\nResult\n```"])
+@pytest.mark.parametrize(
+    ("heading", "expected_heading", "code"),
+    [
+        ("Explain this:", "Explain this:", 'if ready:\n    print("ok")'),
+        ("Explain this:", "Explain this:", 'print("label --flag=value")'),
+        ('Why is "ok" printed?', "Why is ok printed?", 'example = """\n```"sample"\n"""\nprint("ok")'),
+        ("Explain this literal:", "Explain this literal:", 's = """\n```" is sample text\n"""\nprint("done")'),
+        ("Explain this literal:", "Explain this literal:", 's = """\n```" --comment_id=42\n"""\nprint("done")'),
+    ],
+)
+async def test_quoted_fenced_question_reaches_model_and_reply(
+    raw_question_commands, monkeypatch, heading, expected_heading, code, extra_instructions
+):
+    block = f"```python\n{code}\n```"
+    question = f"{expected_heading}\n{block}"
+    request = f'/ask "{heading}\n{block}" --pr_questions.extra_instructions="{extra_instructions}"'
+    chat_completion = AsyncMock(return_value=("Example answer", "stop"))
+    monkeypatch.setattr(pq, "_get_question_diff", lambda *_args, **_kwargs: "@@ -1 +1 @@\n-old\n+new")
+
+    handled = await pr_agent_module.PRAgent(
+        ai_handler=lambda: SimpleNamespace(chat_completion=chat_completion)
+    ).handle_request("https://example.com/org/repo/pull/1", request)
+
+    assert handled is True
+    command, = raw_question_commands
+    await command._prepare_prediction("gpt-4o")
+    chat_completion.assert_awaited_once()
+    assert command.question_str == question
+    assert question in chat_completion.await_args.kwargs["user"]
+    assert extra_instructions not in chat_completion.await_args.kwargs["user"]
+    assert command.vars["extra_instructions"] == extra_instructions
+    assert extra_instructions in chat_completion.await_args.kwargs["system"]
+    assert f"\n{question}\n\n### **Answer:**\nExample answer\n" in command._prepare_pr_answer()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option_first", [False, True], ids=["trailing-option", "leading-option"])
+@pytest.mark.parametrize("extra_instructions", ["Style: concise", "Use this format:\n```text\nResult\n```\nBe brief."])
+async def test_raw_ask_parses_settings_only_outside_fenced_code(
+    raw_question_commands, extra_instructions, option_first
+):
+    question = 'Explain this config:\n~~~text\n--pr_questions.extra_instructions="unfinished\npath=C:\\src\n~~~'
+    option = f'--pr_questions.extra_instructions="{extra_instructions}"'
+    request = f"/ask {option}\n{question}" if option_first else f"/ask {question}\n{option}"
+
+    handled = await pr_agent_module.PRAgent(ai_handler=SimpleNamespace).handle_request(
+        "https://example.com/org/repo/pull/1", request
+    )
+
+    assert handled is True
+    command, = raw_question_commands
+    assert command.vars["questions"] == question
+    assert command.vars["extra_instructions"] == extra_instructions
 
 
 @pytest.mark.asyncio
