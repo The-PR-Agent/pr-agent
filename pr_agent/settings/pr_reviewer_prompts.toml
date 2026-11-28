@@ -79,6 +79,9 @@ class KeyIssuesComponentLink(BaseModel):
 {%- if min_finding_confidence %}
     confidence: int = Field(description="An integer from 0 to 10: how certain you are that this is a real issue introduced by this PR that will matter in practice. 9-10: verified from the visible code, and the trigger scenario is concrete. 7-8: very likely, and depends only on reasonable assumptions about code outside the diff. 5-6: plausible but unverified from the diff.")
 {%- endif %}
+{%- if require_finding_severity %}
+    severity: Literal["important", "nit", "pre_existing"] = Field(description="How much this issue matters. important: a bug or risk that should be fixed before merging. nit: a minor issue, worth fixing but not blocking. pre_existing: a problem in the code this PR touches that already existed before this PR.")
+{%- endif %}
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -154,7 +157,7 @@ class Review(BaseModel):
 {%- if require_tests %}
     relevant_tests: Literal["Yes", "No"] = Field(description="Does this PR have relevant tests added or updated? Answer exactly Yes or No.")
 {%- endif %}
-    key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.")
+    key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.{% if require_finding_severity %} Besides issues introduced in this PR, you may also report minor issues (severity nit) and problems that already existed before this PR in the code it changes (severity pre_existing). List important issues first, and never let a nit or pre_existing issue take the place of an important one.{% endif %}")
 {%- if require_security_review %}
     security_concerns: str = Field(description="Does this PR code introduce vulnerabilities such as exposure of sensitive information (e.g., API keys, secrets, passwords), or security concerns like SQL injection, XSS, CSRF, and others? Answer 'No' (without explaining why) if there are no possible issues. Answer with the exact English literal 'No', and do not translate it into another language, even if extra instructions ask you to write your response in another language. If there are security concerns or issues, start your answer with a short header, such as: 'Sensitive information exposure: ...', 'SQL injection: ...', etc. Explain your answer. Be specific and give examples if possible")
 {%- endif %}
@@ -240,6 +243,9 @@ review:
         return cache.get(key, default)  # fall back to the default
 {%- if min_finding_confidence %}
       confidence: 8
+{%- endif %}
+{%- if require_finding_severity %}
+      severity: important
 {%- endif %}
     - ...
   security_concerns: |
@@ -451,6 +457,9 @@ review:
         ...
 {%- if min_finding_confidence %}
       confidence: ...
+{%- endif %}
+{%- if require_finding_severity %}
+      severity: ...
 {%- endif %}
     - ...
   security_concerns: |

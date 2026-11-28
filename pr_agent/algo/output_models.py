@@ -1,5 +1,7 @@
 """Pydantic models for structured outputs described by prompt templates."""
 
+import re
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal
 
@@ -24,6 +26,13 @@ class KeyIssuesComponentLink(BaseModel):
     existing_code: str | None = None
     improved_code: str | None = None
     confidence: int | None = Field(default=None, ge=0, le=10)
+    severity: Literal["important", "nit", "pre_existing"] | None = None
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _normalise_severity(cls, value):
+        # An unknown value is kept, so validation still reports it.
+        return finding_severity({"severity": value}) or value
 
 
 class TodoSection(BaseModel):
@@ -155,6 +164,21 @@ def finding_confidence(issue: object) -> float | None:
     except ValueError:
         return None
     return confidence if 0 <= confidence <= 10 else None  # also rejects NaN
+
+
+FINDING_SEVERITIES = ("important", "nit", "pre_existing")
+
+
+def finding_severity(issue: object) -> str | None:
+    """Return a finding's severity as one of FINDING_SEVERITIES, or None when it is absent or unknown.
+
+    Spelling variants such as "Pre-existing" or "pre existing" are accepted.
+    """
+    value = issue.get("severity") if isinstance(issue, Mapping) else None
+    if not isinstance(value, str):
+        return None
+    severity = re.sub(r"[\s-]+", "_", value.strip().lower())
+    return severity if severity in FINDING_SEVERITIES else None
 
 
 class Review(BaseModel):

@@ -7,9 +7,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pr_agent.algo.utils import _as_line
+from pr_agent.algo.output_models import finding_severity
+from pr_agent.algo.utils import SEVERITY_BADGES, _as_line, finding_severity_label, get_require_finding_severity
 
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
+_BADGES = "|".join(SEVERITY_BADGES.values())
+# The label text is translated, so match the badge and any short label after it.
+_SEVERITY_BEFORE_HEADER_RE = re.compile(rf"\*\*(?:{_BADGES}) [^*\n:]{{1,40}}: ")
+_SEVERITY_ONLY_HEADER_RE = re.compile(rf"\*\*(?:{_BADGES}) [^*\n:]{{1,40}}\*\*\n\n")
+
+
+def strip_severity_label(body: str) -> str:
+    """Return a published finding body without the severity label that display_body added."""
+    if match := _SEVERITY_BEFORE_HEADER_RE.match(body):
+        return "**" + body[match.end():]
+    if match := _SEVERITY_ONLY_HEADER_RE.match(body):
+        return body[match.end():]
+    return body
 
 
 @dataclass(frozen=True)
@@ -24,6 +38,7 @@ class Finding:
     improved_code: str | None = None
     score: int | float | str | None = None
     confidence: int | None = None
+    severity: str | None = None
     reply: str | None = None
 
     @property
@@ -31,6 +46,15 @@ class Finding:
         if self.header:
             return f"**{self.header}**\n\n{self.body}"
         return self.body
+
+    @property
+    def display_body(self) -> str:
+        # rendered_body identifies the finding across runs, so the severity label is only added here.
+        label = finding_severity_label(self.severity) if get_require_finding_severity() else ""
+        if not label:
+            return self.rendered_body
+        header = f"{label}: {self.header}" if self.header else label
+        return f"**{header}**\n\n{self.body}"
 
     @classmethod
     def from_review_issue(cls, issue: object) -> Finding | None:
@@ -62,6 +86,7 @@ class Finding:
             existing_code=existing_code if isinstance(existing_code, str) else None,
             improved_code=improved_code if isinstance(improved_code, str) else None,
             confidence=confidence,
+            severity=finding_severity(issue),
         )
 
 

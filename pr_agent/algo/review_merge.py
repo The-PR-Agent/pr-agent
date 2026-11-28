@@ -28,8 +28,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import as_review_text
-from pr_agent.algo.output_models import parse_failure_modes
-from pr_agent.algo.utils import is_value_no
+from pr_agent.algo.output_models import finding_severity, parse_failure_modes
+from pr_agent.algo.utils import get_require_finding_severity, is_value_no
 from pr_agent.log import get_logger
 
 MAX_EFFORT = 5
@@ -102,17 +102,30 @@ def _cap_key_issues(review: dict, max_findings: int | None) -> None:
     """Cut the merged findings to the per-review limit, in place.
 
     Without the cut, N chunks can each publish `num_max_findings` issues, so a chunked review
-    exceeds the configured maximum that a single-call review respects.
+    exceeds the configured maximum that a single-call review respects. With
+    `require_finding_severity`, important findings move ahead of nits and pre-existing ones first,
+    so an early chunk's nit cannot push out a later chunk's important finding.
     """
+    issues = review.get("key_issues_to_review")
+    if isinstance(issues, list) and get_require_finding_severity():
+        issues = sorted(issues, key=_severity_rank)
+        review["key_issues_to_review"] = issues
     if max_findings is None:
         return
     try:
         limit = max(0, int(max_findings))
     except (TypeError, ValueError):
         return
-    issues = review.get("key_issues_to_review")
     if isinstance(issues, list) and len(issues) > limit:
         review["key_issues_to_review"] = issues[:limit]
+
+
+_SEVERITY_RANKS = {"important": 0, None: 1, "nit": 2, "pre_existing": 3}
+
+
+def _severity_rank(issue: object) -> int:
+    # A finding without a severity sits after important ones, since it may still be a real bug.
+    return _SEVERITY_RANKS[finding_severity(issue)]
 
 
 def _chunk_key_issues(chunk_outputs: list[dict]) -> list[list]:

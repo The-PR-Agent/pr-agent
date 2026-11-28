@@ -45,3 +45,10 @@ def test_from_review_issue_carries_fix():
 
     assert (finding.existing_code, finding.improved_code) == ("lock.acquire()", "with lock:\n    pass")
     assert (without_fix.existing_code, without_fix.improved_code) == (None, None)
+
+
+def test_from_review_issue_carries_severity():
+    issue = {"relevant_file": "src/app.py", "issue_content": "Leak.", "severity": "Pre-existing"}
+
+    assert Finding.from_review_issue(issue).severity == "pre_existing"
+    assert Finding.from_review_issue({**issue, "severity": "critical"}).severity is None
