@@ -1,0 +1,23 @@
+{
+  "name": "pr-agent",
+  "version": "1.0.0",
+  "description": "Agent skills for running PR-Agent reviews and descriptions from the CLI or a local branch, adding it as a GitHub Action, and configuring it with .pr_agent.toml.",
+  "author": {
+    "name": "PR-Agent",
+    "url": "https://github.com/The-PR-Agent/pr-agent"
+  },
+  "homepage": "https://github.com/The-PR-Agent/pr-agent",
+  "repository": "https://github.com/The-PR-Agent/pr-agent",
+  "license": "MIT",
+  "keywords": [
+    "pr-agent",
+    "code-review",
+    "pull-requests",
+    "github-action",
+    "gitlab",
+    "bitbucket",
+    "llm",
+    "agent-skills"
+  ],
+  "skills": "./skills/"
+}

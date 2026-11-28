@@ -228,6 +228,13 @@ The following diagram illustrates PR-Agent commands and their flow:
 - If you host PR-Agent with your OpenAI API key, it is between you and OpenAI. You can read their API data privacy policy here:
 https://openai.com/enterprise-privacy
 
+## Agent Skills
+
+An agent-agnostic plugin marketplace at [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json) registers
+[`plugins/pr-agent`](plugins/pr-agent), with [agent skills](https://agentskills.io/) that teach coding agents to run
+PR-Agent from the CLI, set up the GitHub Action and configure `.pr_agent.toml`. Codex and Claude Code manifests
+are in the plugin directory.
+
 ## Contributing
 
 To contribute to the project, get started by reading our [Contributing Guide](https://github.com/the-pr-agent/pr-agent/blob/main/CONTRIBUTING.md).
