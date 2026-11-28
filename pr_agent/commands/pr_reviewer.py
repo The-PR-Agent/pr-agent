@@ -68,6 +68,7 @@ from pr_agent.algo.pr_processing import (
     run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.publish_firewall import firewall_model_output
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_finding_state import (
     append_review_state,
@@ -1357,6 +1358,152 @@ class PRReviewer:
     def _review_finding_from_issue(issue: dict) -> Finding | None:
         return Finding.from_review_issue(issue)
 
+    def _firewalled_for_publishing(self, data: dict) -> dict:
+        """Return a copy of the review whose model-authored prose is firewalled (#4999).
+
+        Only what publishes the review reads the copy: the comment, the inline comments
+        and the markdown the sinks deliver. The review itself stays as the model wrote
+        it, which is what the action output, the finding state, the structured review
+        and the sink payload read.
+        """
+        publish_data = copy.deepcopy(data)
+        self._firewall_review_prose(publish_data)
+        if isinstance(publish_data.get("review"), dict):
+            self._firewall_artifact_prose(publish_data["review"])
+        return publish_data
+
+    def _firewall_review_prose(self, data) -> None:
+        """Run the publish-boundary firewall over the model-authored prose fields (#4999).
+
+        Field-level, before rendering: the bot's own template markup (tables, details
+        sections) is never in scope. Each field names the place the template puts it,
+        since that decides what a line of it does once rendered. The rules live in
+        pr_agent.algo.publish_firewall; the pass is idempotent, so re-entering this
+        hook cannot double-escape a field.
+        """
+        review = data.get("review") if isinstance(data, dict) else None
+        if not isinstance(review, dict):
+            return
+        # GitHub renders the review as a table of HTML blocks; other providers get markdown.
+        html = self.git_provider.is_supported("gfm_markdown")
+        concerns = review.get("security_concerns")
+        if isinstance(concerns, str):
+            # The template bolds the header, up to the first ": ", on the field's first line.
+            review["security_concerns"] = firewall_model_output(
+                concerns, after="markup" if ": " in concerns else "blank"
+            )
+        for issue in review.get("key_issues_to_review") or []:
+            if not isinstance(issue, dict):
+                continue
+            header = issue.get("issue_header")
+            if isinstance(header, str):
+                # Inside the template's <details><summary> block on GitHub, a bold line elsewhere.
+                issue["issue_header"] = firewall_model_output(
+                    header, context="html_inline" if html else "markdown", after="blank" if html else "markup"
+                )
+            if isinstance(issue.get("issue_content"), str):
+                # On GitHub a blank line precedes it in one branch of the template, and the bold
+                # header shares its line in the other two, backticks included.
+                issue["issue_content"] = firewall_model_output(
+                    issue["issue_content"],
+                    after="maybe" if html else "blank",
+                    continued=html and isinstance(header, str) and "`" in header,
+                )
+        self._firewall_extra_prose(review, html)
+
+
+    def _firewall_extra_prose(self, review, html: bool = True) -> None:
+        """Firewall the remaining model-authored prose: todo sections, failure modes,
+        ticket compliance, priority files, split candidates, and the cost estimate."""
+        block = "html_block" if html else "markdown"  # inside the template's own HTML blocks
+        line = "blank" if html else "item"  # a list item on GitHub's table is a bare line elsewhere
+        joined = "blank" if html else "markup"  # a line the template joins with its own text elsewhere
+        todo_sections = review.get("todo_sections")
+        if isinstance(todo_sections, str):  # the schema also allows a prose summary
+            review["todo_sections"] = firewall_model_output(todo_sections, context=block, after=line)
+        if isinstance(todo_sections, list):
+            for index, section in enumerate(todo_sections):
+                if isinstance(section, str):
+                    todo_sections[index] = firewall_model_output(section, context=block, after=line)
+                elif isinstance(section, dict):
+                    for prose_key in ("relevant_file", "content"):
+                        if isinstance(section.get(prose_key), str):
+                            section[prose_key] = firewall_model_output(section[prose_key], context=block, after=line)
+        failure_modes = review.get("failure_modes")
+        if isinstance(failure_modes, list):
+            for mode in failure_modes:
+                if not isinstance(mode, dict):
+                    continue
+                for prose_key in ("what", "where", "trigger", "detected_by"):
+                    if isinstance(mode.get(prose_key), str):
+                        # The template escapes these itself.
+                        mode[prose_key] = firewall_model_output(mode[prose_key], context="escaped")
+        tickets = review.get("ticket_compliance_check")
+        if isinstance(tickets, list):
+            for ticket in tickets:
+                if not isinstance(ticket, dict):
+                    continue
+                if isinstance(ticket.get("ticket_url"), str):
+                    # The template puts it inside the link it writes around the URL's last segment,
+                    # whose backticks precede it on the line.
+                    ticket["ticket_url"] = firewall_model_output(ticket["ticket_url"], after="markup", continued=True)
+                for prose_key in (
+                    "ticket_requirements",
+                    "fully_compliant_requirements",
+                    "not_compliant_requirements",
+                    "requires_further_human_verification",
+                ):
+                    if isinstance(ticket.get(prose_key), str):
+                        ticket[prose_key] = firewall_model_output(ticket[prose_key])
+        for prose_key in ("risk_level", "merge_recommendation"):
+            # The template renders each after its own label on the same line.
+            if isinstance(review.get(prose_key), str):
+                review[prose_key] = firewall_model_output(review[prose_key], context=block, after=joined)
+        priority_files = review.get("review_priority_files")
+        if isinstance(priority_files, list):
+            review["review_priority_files"] = [
+                firewall_model_output(entry, context=block, after=line) if isinstance(entry, str) else entry
+                for entry in priority_files
+            ]
+        splits = review.get("can_be_split")
+        if isinstance(splits, list):
+            for split in splits:
+                if not isinstance(split, dict):
+                    continue
+                if isinstance(split.get("title"), str):
+                    split["title"] = firewall_model_output(split["title"], context=block, after=joined)
+                if isinstance(split.get("relevant_files"), list):
+                    split["relevant_files"] = [
+                        firewall_model_output(entry, after="item") if isinstance(entry, str) else entry
+                        for entry in split["relevant_files"]
+                    ]
+        estimate = review.get("contribution_time_cost_estimate")
+        if isinstance(estimate, dict):
+            for prose_key in ("best_case", "average_case", "worst_case"):
+                if isinstance(estimate.get(prose_key), str):
+                    estimate[prose_key] = firewall_model_output(estimate[prose_key], context=block, after=joined)
+
+    def _firewall_artifact_prose(self, review) -> None:
+        """Firewall parsed artifact findings; their quotes were verified on the raw text."""
+        findings = review.get("artifact_findings")
+        if not isinstance(findings, list):
+            return
+        html = self.git_provider.is_supported("gfm_markdown")
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            for prose_key in ("fact", "evidence"):
+                if isinstance(finding.get(prose_key), str):
+                    # The template escapes the HTML itself. The evidence may hold line breaks, and
+                    # what follows a blank one is markdown; elsewhere the template opens a code
+                    # span before it.
+                    finding[prose_key] = firewall_model_output(
+                        finding[prose_key],
+                        context="escaped" if prose_key == "fact" else ("escaped_block" if html else "markdown"),
+                        after="blank" if html or prose_key == "fact" else "markup",
+                        continued=prose_key == "evidence" and not html,
+                    )
+
     @classmethod
     def _review_findings_from_data(cls, data: dict) -> list[Finding] | None:
         review = data.get("review")
@@ -2225,6 +2372,10 @@ class PRReviewer:
         if self._prepare_cancelled():
             return ""
         self._prepare_review_finding_state(data)
+        # The finding state and the outputs above it read the review as the model wrote it. What follows
+        # publishes it, so it reads a copy with the prose firewalled (#4999).
+        model_data = data
+        data = self._firewalled_for_publishing(data)
         # Inline publication returns a pruned copy; the external sinks get the complete review, as /improve's do.
         complete_data = data
         if self._prepare_cancelled():
@@ -2368,10 +2519,10 @@ class PRReviewer:
                     files=self.git_provider.get_diff_files(), commit_review=commit_review_markdown_text)
             if self._prepare_cancelled():
                 return ""
-            self._pending_sink_output = ("review", complete_data.get('review', {}), sink_markdown)
+            self._pending_sink_output = ("review", model_data.get('review', {}), sink_markdown)
 
         # Add custom labels from the review prediction (effort, security)
-        self.set_review_labels(data)
+        self.set_review_labels(model_data)
 
         if markdown_text is None or len(markdown_text) == 0:
             markdown_text = ""

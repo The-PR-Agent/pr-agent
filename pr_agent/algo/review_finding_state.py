@@ -14,6 +14,7 @@ from pr_agent.algo.findings import Finding
 from pr_agent.algo.i18n import t
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
 from pr_agent.algo.markdown_span import _markdown_code_span
+from pr_agent.algo.publish_firewall import firewall_model_output
 from pr_agent.algo.utils import _as_line
 
 STATE_SCHEMA_VERSION = 1
@@ -373,7 +374,8 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
         body = finding["body"]
         if body.startswith(_STORED_POSSIBLE_ISSUE_HEADER):
             body = f"**{t('review.possible_issue')}**\n\n{body.removeprefix(_STORED_POSSIBLE_ISSUE_HEADER)}"
-        lines.extend([f"### {location}", "", body, ""])
+        # The state keeps the model's text as written; this section publishes it under the bot's name.
+        lines.extend([f"### {location}", "", firewall_model_output(body), ""])
     lines.extend(["</details>", ""])
     return "\n".join(lines).rstrip()
 
