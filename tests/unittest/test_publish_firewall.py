@@ -75,6 +75,15 @@ def test_bare_and_www_urls_are_defused():
     assert "www\\.evil\\.example/track" in result
 
 
+def test_a_dotted_capital_i_does_not_move_the_urls_out_of_reach():
+    # "İ".lower() is two characters, so lowering it shifted every position found after it.
+    line = "İ https://evil.example/x and www.evil.example/track"
+
+    result = firewall_model_output(line)
+
+    assert result == "İ https\\://evil\\.example/x and www\\.evil\\.example/track"
+
+
 def test_raw_tags_are_escaped():
     line = "the comment embeds <img src=x> and </details> markup"
 

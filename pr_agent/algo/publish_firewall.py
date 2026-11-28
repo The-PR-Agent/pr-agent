@@ -907,9 +907,10 @@ def _url_escapes(segment: str, spans: list[tuple[int, int]]) -> list[int]:
     Each URL is scanned once. A second autolink that starts inside an
     already-handled one has its ``:`` and ``.`` escaped by that same pass, so it
     is skipped rather than rescanned, which keeps a token made of glued URLs
-    linear.
+    linear. The search is on a lowercase copy of the ASCII letters only, since
+    ``"İ".lower()`` is two characters and one would move every URL after it.
     """
-    lowered = segment.lower()
+    lowered = "".join(character.lower() if character.isascii() else character for character in segment)
     starts = []
     for prefix, stopped_by_punctuation in _URL_PREFIXES:
         found = lowered.find(prefix)
