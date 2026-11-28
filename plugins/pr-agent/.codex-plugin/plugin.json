@@ -1,0 +1,44 @@
+{
+  "name": "pr-agent",
+  "version": "1.0.0",
+  "description": "Agent skills for running PR-Agent reviews and descriptions from the CLI or a local branch, adding it as a GitHub Action, and configuring it with .pr_agent.toml.",
+  "author": {
+    "name": "PR-Agent",
+    "url": "https://github.com/The-PR-Agent/pr-agent"
+  },
+  "homepage": "https://github.com/The-PR-Agent/pr-agent",
+  "repository": "https://github.com/The-PR-Agent/pr-agent",
+  "license": "MIT",
+  "keywords": [
+    "pr-agent",
+    "code-review",
+    "pull-requests",
+    "github-action",
+    "gitlab",
+    "bitbucket",
+    "llm",
+    "agent-skills"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "PR-Agent",
+    "shortDescription": "AI pull request reviews",
+    "longDescription": "Skills for PR-Agent, the open-source AI pull request reviewer. Covers running describe, review, improve, ask and other commands via Docker, pip or uv against GitHub, GitLab, Bitbucket, Gitea or Azure DevOps PRs, saving a review to a file instead of publishing, and reviewing a local branch with the local git provider; adding the GitHub Action with the right permissions, secrets and triggers (and the pull_request_target trade-off for forks); and configuring behaviour with .pr_agent.toml, environment variables and host-controlled settings.",
+    "developerName": "PR-Agent",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/The-PR-Agent/pr-agent",
+    "defaultPrompt": [
+      "Review my current branch against main with PR-Agent",
+      "Add the PR-Agent GitHub Action to this repo",
+      "Tune .pr_agent.toml so reviews focus on security"
+    ],
+    "brandColor": "#6050D0",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}
